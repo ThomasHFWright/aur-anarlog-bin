@@ -1,0 +1,110 @@
+name: Build and publish AUR release
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, automation/update-release]
+    paths: [PKGBUILD, .SRCINFO, '.github/**']
+permissions:
+  contents: read
+concurrency:
+  group: aur-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 45
+    steps:
+      - name: Install release tools
+        run: pacman -Syu --noconfirm --needed git python
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Prepare unprivileged builder
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Validate committed recipe
+        run: |
+          runuser -u builder -- python .github/scripts/update-release.py --self-test
+          runuser -u builder -- makepkg --printsrcinfo > /tmp/generated-srcinfo
+          diff -u .SRCINFO /tmp/generated-srcinfo
+      - name: Install build dependencies and freeze publication files
+        shell: bash
+        run: |
+          mapfile -t deps < <(awk '$1 == "depends" || $1 == "makedepends" || $1 == "checkdepends" {print $3}' .SRCINFO)
+          pacman -S --noconfirm --needed "${deps[@]}"
+          mkdir /verified
+          cp PKGBUILD .SRCINFO /verified/
+          chmod -R a-w /verified
+      - name: Build and test without publication credentials
+        run: |
+          runuser -u builder -- env -i HOME=/home/builder PATH=/usr/bin:/bin TERM=xterm-256color makepkg --cleanbuild --check --noconfirm
+          runuser -u builder -- python .github/scripts/update-release.py --verify-arm64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-recipe
+          path: /verified/
+          include-hidden-files: true
+          retention-days: 7
+  report:
+    needs: build
+    if: always() && github.ref == 'refs/heads/automation/update-release'
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Show build result on the update PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_STATE: ${{ needs.build.result == 'success' && 'success' || 'failure' }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state="$BUILD_STATE" -f context='Package build and tests' -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" -f description='Automatic package build and test result'
+  merge:
+    needs: [build, report]
+    if: github.ref == 'refs/heads/automation/update-release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Merge only the tested update commit
+        run: |
+          set -eu
+          gh pr merge automation/update-release --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$GITHUB_SHA"
+          # A merge made with GITHUB_TOKEN does not trigger the main push workflow.
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-recipe
+          path: verified
+      - name: Publish verified recipe to AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -eu
+          key_dir=$(mktemp -d)
+          trap 'rm -rf "$key_dir"' EXIT
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$key_dir/key"
+          chmod 600 "$key_dir/key"
+          export GIT_SSH_COMMAND="ssh -i $key_dir/key -o IdentityAgent=none -o IdentitiesOnly=yes -o UserKnownHostsFile=$GITHUB_WORKSPACE/.github/aur-known-hosts -o StrictHostKeyChecking=yes"
+          git clone ssh://aur@aur.archlinux.org/anarlog-bin.git "$key_dir/aur"
+          cp verified/* verified/.SRCINFO "$key_dir/aur/"
+          cd "$key_dir/aur"
+          git add PKGBUILD .SRCINFO
+          if ! git diff --cached --quiet; then
+            git -c user.name='Snoopey' -c user.email='thomas.h.f.wright@gmail.com' commit -m 'Update verified Anarlog package'
+            git push origin HEAD:master
+          fi
