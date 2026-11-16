@@ -2,6 +2,7 @@
 set -euo pipefail
 umask 077
 unset ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT
+export RUNNER_MANUALLY_TRAP_SIG=1
 mkdir -p /state/home /work
 if [ ! -x /state/runner/run.sh ]; then
   cp -a /opt/runner-dist /state/runner
