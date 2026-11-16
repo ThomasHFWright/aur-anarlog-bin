@@ -11,8 +11,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    runs-on: ubuntu-latest
-    container: archlinux:base-devel
+    runs-on: [self-hosted, linux, x64, anarlog-build]
     timeout-minutes: 45
     steps:
       - name: Install release tools
@@ -22,7 +21,7 @@ jobs:
           persist-credentials: false
       - name: Prepare unprivileged builder
         run: |
-          useradd --create-home builder
+          id builder >/dev/null 2>&1 || useradd --create-home builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Validate committed recipe
@@ -35,6 +34,7 @@ jobs:
         run: |
           mapfile -t deps < <(awk '$1 == "depends" || $1 == "makedepends" || $1 == "checkdepends" {print $3}' .SRCINFO)
           pacman -S --noconfirm --needed "${deps[@]}"
+          rm -rf /verified
           mkdir /verified
           cp PKGBUILD .SRCINFO /verified/
           chmod -R a-w /verified
@@ -51,7 +51,7 @@ jobs:
   report:
     needs: build
     if: always() && github.ref == 'refs/heads/automation/update-release'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, anarlog-publish]
     permissions:
       statuses: write
     steps:
@@ -64,7 +64,7 @@ jobs:
   merge:
     needs: [build, report]
     if: github.ref == 'refs/heads/automation/update-release'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, anarlog-publish]
     permissions:
       contents: write
       pull-requests: write
@@ -81,7 +81,7 @@ jobs:
   publish:
     needs: build
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, anarlog-publish]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

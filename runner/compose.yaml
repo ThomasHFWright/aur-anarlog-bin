@@ -1,0 +1,53 @@
+name: anarlog-aur-runner
+services:
+  build:
+    build: .
+    image: local/anarlog-aur-builder:2.338.2
+    init: true
+    restart: unless-stopped
+    cpus: 2
+    mem_limit: 3g
+    pids_limit: 512
+    environment:
+      RUNNER_NAME: validator-anarlog-build
+      RUNNER_LABEL: anarlog-build
+    volumes:
+      - build-state:/state
+      - build-work:/work
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  publish:
+    image: local/github-actions-runner:2.338.2
+    entrypoint: [/bin/bash, /usr/local/bin/anarlog-start.sh]
+    init: true
+    restart: unless-stopped
+    user: 1001:1001
+    cpus: 1
+    mem_limit: 1g
+    pids_limit: 256
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=256m
+    environment:
+      RUNNER_NAME: validator-anarlog-publish
+      RUNNER_LABEL: anarlog-publish
+    volumes:
+      - ./start.sh:/usr/local/bin/anarlog-start.sh:ro
+      - publish-state:/state
+      - publish-work:/work
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+volumes:
+  build-state:
+  build-work:
+  publish-state:
+  publish-work:
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.240.13.0/28

@@ -13,8 +13,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   update:
-    runs-on: ubuntu-latest
-    container: archlinux:base-devel
+    runs-on: [self-hosted, linux, x64, anarlog-build]
     timeout-minutes: 15
     steps:
       - name: Install release tools
@@ -24,8 +23,10 @@ jobs:
           ref: main
           persist-credentials: false
       - name: Resolve stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          useradd --create-home builder
+          id builder >/dev/null 2>&1 || useradd --create-home builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           runuser -u builder -- python .github/scripts/update-release.py --self-test

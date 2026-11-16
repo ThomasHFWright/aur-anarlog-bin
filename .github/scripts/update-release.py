@@ -2,11 +2,13 @@
 """Follow upstream packaging metadata; never import changed build instructions."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 import urllib.request
+from urllib.parse import urlsplit
 
 BASE = 'https://api.github.com/repos/fastrepl/anarlog'
 FIELDS = {
@@ -20,6 +22,9 @@ FIELDS = {
 
 def fetch(url):
     request = urllib.request.Request(url, headers={'User-Agent': 'aur-anarlog-bin-updater'})
+    if urlsplit(url).scheme == 'https' and urlsplit(url).netloc == 'api.github.com':
+        if token := os.environ.get('GH_TOKEN'):
+            request.add_header('Authorization', f'Bearer {token}')
     return urllib.request.urlopen(request, timeout=120)
 
 
@@ -50,6 +55,22 @@ def update_recipe(current, upstream):
 
 
 def self_test():
+    from unittest.mock import patch
+
+    with patch.dict(os.environ, {'GH_TOKEN': 'test-token'}), patch('urllib.request.urlopen') as open_url:
+        for url, expected in [
+            (BASE + '/releases/latest', 'Bearer test-token'),
+            ('https://raw.githubusercontent.com/fastrepl/anarlog/main/LICENSE', None),
+            ('https://github.com/fastrepl/anarlog/releases/download/test/file', None),
+            ('https://api.github.com.example.com/', None),
+            ('http://api.github.com/', None),
+        ]:
+            fetch(url)
+            assert open_url.call_args.args[0].get_header('Authorization') == expected
+    with patch.dict(os.environ, {}, clear=True), patch('urllib.request.urlopen') as open_url:
+        fetch(BASE + '/releases/latest')
+        assert open_url.call_args.args[0].get_header('Authorization') is None
+    print('PASS GitHub API authentication is limited to its HTTPS origin')
     current = Path('PKGBUILD').read_text()
     upstream = current.replace('pkgver=' + metadata(current)['pkgver'], 'pkgver=99.0.0')
     assert metadata(update_recipe(current, upstream))['pkgver'] == '99.0.0'
